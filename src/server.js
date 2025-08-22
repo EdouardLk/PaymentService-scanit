@@ -1,6 +1,5 @@
-// This test secret API key is a placeholder. Don't include personal details in requests with this key.
-// To see your test secret API key embedded in code samples, sign in to your Stripe account.
-// You can also find your test secret API key at https://dashboard.stripe.com/test/apikeys.
+
+
 const express = require('express');
 const app = express();
 
@@ -12,8 +11,10 @@ const productType = ['template', 'credits']
 
 const YOUR_DOMAIN = 'http://localhost:4242';
 
-app.use(express.json());
-app.use(express.static('public'));
+const authenticateToken = require('./auth.middleware');
+
+//app.use(express.json());
+//app.use(express.static('public'));
 //console.log(process.env.FRONTEND_URL)
 
 
@@ -27,17 +28,27 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use((req, res, next) => {
+  if (req.originalUrl === "/webhook") {
+    next(); // pas de express.json ici
+  } else {
+    express.json()(req, res, next);
+  }
+});
+
 app.get('/', async (req, res) => {
   res.status(200).json({ message: `connecté au service de paiement` })
 });
 
 
-app.post('/create-checkout-session', async (req, res) => {
+app.post('/create-checkout-session', authenticateToken, async (req, res) => {
 
   try {
-    //console.log('Reçu:', req.body);
+    // extraction du token pour le trasnmettre en meta-data coté webhook
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
 
-    const { priceId } = req.body;
+    const { priceId, productName, userId } = req.body;
     console.log(priceId);
 
     const session = await stripe.checkout.sessions.create({
@@ -51,13 +62,74 @@ app.post('/create-checkout-session', async (req, res) => {
       mode: 'payment',
       success_url: `${process.env.FRONTEND_URL}/pricing/stripe/success`,
       cancel_url: `${process.env.FRONTEND_URL}/pricing/stripe/cancel`,
+      metadata: {
+        userId: userId,
+        productName: productName,
+        userToken: token
+      }
     });
 
     res.status(200).json({ url: session.url })
-  } catch(err) {
+  } catch (err) {
     console.error('Erreur de session Stripe :', err);
     res.status(500).json({ message: 'Erreur lors de la création de la session Stripe' });
   }
+});
+
+
+// route qui sera appelé un fois l'achat complété
+app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('Webhook signature verification failed.', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Événement de paiement réussi
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    console.log("el toki = " + session.metadata.userToken)
+    const customerEmail = session.customer_email;
+
+    try {
+      // Appelle le DatabaseService pour ajouter les crédits
+      await fetch(`${process.env.DATABASE_SERVICE_URL}/users/buyCredits`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.metadata.userToken}`
+        },
+        body: JSON.stringify({ userId : session.metadata.userId, productName: session.metadata.productName })
+      });
+      console.log(`Crédit ajouté pour ${customerEmail}`);
+    } catch (err) {
+      console.error("Erreur lors de l'actualisation du nombre de crédits :" + err.message);
+    }
+
+    try {
+      // Appelle le DatabaseService pour ajouter les crédits
+      await fetch(`${process.env.NOTIFICAITON_SERVICE_URL}/email/bill`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.metadata.userToken}`
+        },
+        body: JSON.stringify({ userId : session.metadata.userId, productName: session.metadata.productName })
+      });
+      console.log(`Crédit ajouté pour ${customerEmail}`);
+    } catch (err) {
+      console.error("Erreur lors de l'actualisation du nombre de crédits :" + err.message);
+    }
+
+  }
+
+
+
+  res.status(200).json({ received: true });
 });
 
 app.listen(process.env.PORT, () => console.log(`Serveur écoute sur le port : http://localhost:${process.env.PORT}`));

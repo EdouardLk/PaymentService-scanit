@@ -4,7 +4,8 @@
   "description": "A sample Stripe implementation",
   "main": "src/server.js",
   "scripts": {
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "lint": "eslint"
   },
   "author": "stripe-samples",
   "license": "ISC",
@@ -15,5 +16,8 @@
     "node-fetch": "^3.3.2",
     "prom-client": "^15.1.3",
     "stripe": "^18.0.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.35.0"
   }
 }

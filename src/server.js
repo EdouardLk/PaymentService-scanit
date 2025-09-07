@@ -131,11 +131,11 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       console.error("Erreur lors de l'actualisation du nombre de crédits :" + err.message);
     }
 
+    res.status(200).json({ received: true });
+  }else{
+    res.status(500).json({message : "Checkout incomplet"})
   }
 
-
-
-  res.status(200).json({ received: true });
 });
 
 

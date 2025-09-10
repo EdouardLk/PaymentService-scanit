@@ -172,6 +172,9 @@ register.registerMetric(httpRequestDurationSeconds);
 
 // Endpoint pour exposer les métriques
 app.get('/metrics', async (req, res) => {
+  //middleware
+    if (req.query.token !== process.env.METRICS_TOKEN) return res.status(403).send("Forbidden");
+    
     res.set('Content-Type', register.contentType);
     res.end(await register.metrics());
 });

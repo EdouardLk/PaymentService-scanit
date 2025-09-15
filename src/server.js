@@ -7,7 +7,6 @@ const cors = require('cors');
 require('dotenv').config();
 
 const stripe = require('stripe')(process.env.STRIPE_KEY);
-const productType = ['template', 'credits']
 
 const authenticateToken = require('./auth.middleware');
 
@@ -25,11 +24,11 @@ app.use((req, res, next) => {
   console.log(`📩 Requête reçue : ${req.method} ${req.url}`);
 
   // Middleware pour mesurer chaque requête
-    const end = httpRequestDurationSeconds.startTimer();
-    res.on('finish', () => {
-      httpRequestsTotal.inc({ method: req.method, route: req.path, status: res.statusCode });
-      end({ method: req.method, route: req.path, status: res.statusCode });
-    });
+  const end = httpRequestDurationSeconds.startTimer();
+  res.on('finish', () => {
+    httpRequestsTotal.inc({ method: req.method, route: req.path, status: res.statusCode });
+    end({ method: req.method, route: req.path, status: res.statusCode });
+  });
 
   next();
 });
@@ -55,7 +54,7 @@ app.post('/create-checkout-session', authenticateToken, async (req, res) => {
     const token = authHeader && authHeader.split(' ')[1];
 
     const { priceId, productName, userId } = req.body;
-    console.log(priceId);
+    //console.log(req.body);
 
     const session = await stripe.checkout.sessions.create({
       line_items: [
@@ -98,8 +97,8 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
   // Événement de paiement réussi
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    console.log("el toki = " + session.metadata.userToken)
-    const customerEmail = session.customer_email;
+    const invoice_url = event.data.object.receipt_url;
+    const customerEmail = session.customer_details.email;
 
     try {
       // Appelle le DatabaseService pour ajouter les crédits
@@ -109,36 +108,62 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.metadata.userToken}`
         },
-        body: JSON.stringify({ userId : session.metadata.userId, productName: session.metadata.productName })
+        body: JSON.stringify({ userId: session.metadata.userId, productName: session.metadata.productName })
       });
       console.log(`Crédit ajouté pour ${customerEmail}`);
     } catch (err) {
-      console.error("Erreur lors de l'actualisation du nombre de crédits :" + err.message);
+      //console.error("Erreur lors de l'actualisation du nombre de crédits :" + err.message);
+      res.status(500).json({ message: "Erreur lors de l'actualisation du nombre de crédits" + err.message })
     }
 
-    try {
-      // Appelle le NotificationService pour envoyé un reçu de paiement
-      await fetch(`${process.env.NOTIFICATION_SERVICE_URL}/email/bill`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.metadata.userToken}`
-        },
-        body: JSON.stringify({ userId : session.metadata.userId, productName: session.metadata.productName })
-      });
-      console.log(`Crédit ajouté pour ${customerEmail}`);
-    } catch (err) {
-      console.error("Erreur lors de l'actualisation du nombre de crédits :" + err.message);
+    console.log("maintenant envoi mail de notification");
+
+    if( getInvoice(event.data.object.payment_intent) !== null){ // si on arrive a récupérer l'url de récu on prépare un mail
+      try {
+        // Appelle le NotificationService pour envoyé un reçu de paiement
+        await fetch(`${process.env.NOTIFICATION_SERVICE_URL}/email/bill`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            userId: session.metadata.userId,
+            productName: session.metadata.productName,
+            email: customerEmail,
+            invoiceUrl: invoice_url
+          })
+        });
+  
+      } catch (err) {
+        //console.error("Erreur lors de l'actualisation du nombre de crédits :" + err.message);
+        res.status(500).json({ message: "Erreur lors l'envoi de la facture" + err.message })
+      }
     }
 
     res.status(200).json({ received: true });
-  }else{
-    res.status(500).json({message : "Checkout incomplet"})
+  } else {
+    res.status(500).json({ message: "Checkout incomplet" })
   }
 
 });
 
 
+
+/**
+ * pour récupérer le reçu de paiment dans l'objet stripe
+ * @param {String} payment_intent_id 
+ * @returns {String} l'url du reçu
+ */
+async function getInvoice(payment_intent_id) {
+  const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id, {
+    expand: ['charges.data.balance_transaction']
+  });
+
+  const receiptUrl = paymentIntent.charges.data[0].receipt_url;
+
+  return (receiptUrl !== undefined) ? receiptUrl : null ;
+;
+};
 
 
 //----------------partie metrics------------//
@@ -173,10 +198,10 @@ register.registerMetric(httpRequestDurationSeconds);
 // Endpoint pour exposer les métriques
 app.get('/metrics', async (req, res) => {
   //middleware
-    if (req.query.token !== process.env.METRICS_TOKEN) return res.status(403).send("Forbidden");
-    
-    res.set('Content-Type', register.contentType);
-    res.end(await register.metrics());
+  if (req.query.token !== process.env.METRICS_TOKEN) return res.status(403).send("Forbidden");
+
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
 });
 
 
